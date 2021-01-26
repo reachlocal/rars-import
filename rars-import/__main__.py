@@ -90,7 +90,7 @@ def main():
           else:
             query = query + f' WHERE CAST({period_column[0]} AS DATE) = \'{yesterday}\''
         else:
-          truncate_query = f'DELETE FROM `{bq_dataset}`.{table} WHERE 1=1'
+          truncate_query = f'TRUNCATE TABLE `{bq_dataset}`.{table}'
           query_job = bq_client.query(truncate_query)
           result = query_job.result()
           print(f'Truncated table `{bq_dataset}`.{table}: {result}')
