@@ -7,6 +7,7 @@ from google.cloud import storage
 from google.cloud import bigquery
 from datetime import datetime, timedelta
 import threading
+from google.cloud.exceptions import NotFound
 
 def flush_to_file(table, data, header, storage_client, bq_client, google_folder, bucket_name, bq_dataset):
   now = datetime.now().strftime('%Y%m%dT%H%M%S')
@@ -29,7 +30,10 @@ def upload_and_load_file(table, storage_client, bq_client, google_folder, bucket
   blob = bucket.blob(blob_path)
   blob.upload_from_filename(filepath)
   print(f'Uploaded to {blob_path}')
-  os.remove(filepath)
+  try:
+    os.remove(filepath)
+  except:
+    print(f'File {filepath} not found')
 
   table_id = f'{bucket_name}.{bq_dataset}.{table}'
   uri = f'gs://{bucket_name}/{blob_path}'
@@ -77,34 +81,38 @@ def main():
 
     mycursor = mydb.cursor()
     for table in tables:
-        header_cursor = mydb.cursor()
-        header_cursor.execute(f'SHOW COLUMNS FROM `{schema}`.{table}')
-        columns_result = header_cursor.fetchall()
-        header = list(map(lambda x: x[0].replace('.', '_').replace('-', '_').replace('+', '_plus'), columns_result))
-        period_column = get_period_column(columns_result)
+        try:
+          bq_client.get_table(f'{bq_dataset}.{table}')
+          header_cursor = mydb.cursor()
+          header_cursor.execute(f'SHOW COLUMNS FROM `{schema}`.{table}')
+          columns_result = header_cursor.fetchall()
+          header = list(map(lambda x: x[0].replace('.', '_').replace('-', '_').replace('+', '_plus'), columns_result))
+          period_column = get_period_column(columns_result)
 
-        query = f'SELECT * FROM  `{schema}`.{table}'
-        if period_column is not None:
-          if period_column[1] == 'date':
-            query = query + f' WHERE {period_column[0]} = \'{yesterday}\''
+          query = f'SELECT * FROM  `{schema}`.{table}'
+          if period_column is not None:
+            if period_column[1] == 'date':
+              query = query + f' WHERE {period_column[0]} = \'{yesterday}\''
+            else:
+              query = query + f' WHERE CAST({period_column[0]} AS DATE) = \'{yesterday}\''
           else:
-            query = query + f' WHERE CAST({period_column[0]} AS DATE) = \'{yesterday}\''
-        else:
-          truncate_query = f'TRUNCATE TABLE `{bq_dataset}`.{table}'
-          query_job = bq_client.query(truncate_query)
-          result = query_job.result()
-          print(f'Truncated table `{bq_dataset}`.{table}: {result}')
-        print(f'Retrieving data for {table}: {query}')
-        mycursor.execute(query)
+            truncate_query = f'TRUNCATE TABLE `{bq_dataset}`.{table}'
+            query_job = bq_client.query(truncate_query)
+            result = query_job.result()
+            print(f'Truncated table `{bq_dataset}`.{table}: {result}')
+          print(f'Retrieving data for {table}: {query}')
+          mycursor.execute(query)
 
-        rows = []
-        for row in mycursor:
-            entry = list(map(lambda x: x.replace('\n', '\\n').replace('\r', '\\r').replace('\0', '').replace('\x00', '') if isinstance(x, str) else x, row))
-            rows.append(entry)
-            if len(rows) >= 1000000:
-                flush_to_file(table, rows, header, storage_client, bq_client, google_folder, bucket_name, bq_dataset)
-                rows = []
-        flush_to_file(table, rows, header, storage_client, bq_client, google_folder, bucket_name, bq_dataset)
-        print(f'Saved data for {table}')
+          rows = []
+          for row in mycursor:
+              entry = list(map(lambda x: x.replace('\n', '\\n').replace('\r', '\\r').replace('\0', '').replace('\x00', '') if isinstance(x, str) else x, row))
+              rows.append(entry)
+              if len(rows) >= 1000000:
+                  flush_to_file(table, rows, header, storage_client, bq_client, google_folder, bucket_name, bq_dataset)
+                  rows = []
+          flush_to_file(table, rows, header, storage_client, bq_client, google_folder, bucket_name, bq_dataset)
+          print(f'Saved data for {table}')
+        except NotFound:
+          print(f'Table {table} does not exist in this dataset')
 
 main()
